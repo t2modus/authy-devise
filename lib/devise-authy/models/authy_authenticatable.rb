@@ -5,7 +5,7 @@ module Devise
       extend ActiveSupport::Concern
 
       def with_authy_authentication?(request)
-        if self.authy_id.present? && self.authy_enabled
+        if self.verify_number.present? && self.authy_enabled
           return true
         end
 
