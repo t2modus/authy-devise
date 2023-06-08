@@ -83,10 +83,6 @@ class Devise::DeviseAuthyController < DeviseController
   end
 
   def GET_verify_authy_installation
-    if resource_class.authy_enable_qr_code
-      response = Authy::API.request_qr_code(id: resource.authy_id)
-      @authy_qr_code = response.qr_code
-    end
     render :verify_authy_installation
   end
 
@@ -95,7 +91,11 @@ class Devise::DeviseAuthyController < DeviseController
     check = client.verify.v2.services(ENV['TWILIO_VERIFY_SERVICE_ID'])
                   .verification_checks
                   .create(to: @resource.verify_number, code: params[:token])
-    if check.status == 'approved'
+    approved = (check.status == 'approved')
+
+    self.resource.authy_enabled = approved
+
+    if approved && self.resource.save
       remember_device(@resource.id) if params[:remember_device].to_i == 1
       record_authy_authentication
       set_flash_message(:notice, :enabled)
