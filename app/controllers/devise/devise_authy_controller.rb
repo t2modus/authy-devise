@@ -22,22 +22,17 @@ class Devise::DeviseAuthyController < DeviseController
   include Devise::Controllers::Helpers
 
   def GET_verify_authy
-    if resource_class.authy_enable_onetouch
-      approval_request = send_one_touch_request(@resource.authy_id)['approval_request']
-      @onetouch_uuid = approval_request['uuid'] if approval_request.present?
-    end
     render :verify_authy
   end
 
   # verify 2fa
   def POST_verify_authy
-    token = Authy::API.verify({
-      :id => @resource.authy_id,
-      :token => params[:token],
-      :force => true
-    })
+    client = Twilio::REST::Client.new
+    check = client.verify.v2.services(ENV['TWILIO_VERIFY_SERVICE_ID'])
+                  .verification_checks
+                  .create(to: @resource.verify_number, code: params[:token])
 
-    if token.ok?
+    if check.status == 'approved'
       remember_device(@resource.id) if params[:remember_device].to_i == 1
       remember_user
       record_authy_authentication
@@ -49,7 +44,7 @@ class Devise::DeviseAuthyController < DeviseController
 
   # enable 2fa
   def GET_enable_authy
-    if resource.authy_id.blank? || !resource.authy_enabled
+    if resource.verify_number.blank? || !resource.authy_enabled
       render :enable_authy
     else
       set_flash_message(:notice, :already_enabled)
@@ -58,14 +53,13 @@ class Devise::DeviseAuthyController < DeviseController
   end
 
   def POST_enable_authy
-    @authy_user = Authy::API.register_user(
-      :email => resource.email,
-      :cellphone => params[:cellphone],
-      :country_code => params[:country_code]
-    )
-
-    if @authy_user.ok?
-      resource.authy_id = @authy_user.id
+    country_code = params[:country_code].to_s.delete('^0-9')
+    cellphone = params[:cellphone].to_s.delete('^0-9')
+    number = "+#{country_code}#{cellphone}"
+    client = Twilio::REST::Client.new
+    check = client.lookups.v2.phone_numbers(number).fetch
+    if check.valid
+      resource.verify_number = number
       if resource.save
         redirect_to [resource_name, :verify_authy_installation] and return
       else
@@ -80,61 +74,33 @@ class Devise::DeviseAuthyController < DeviseController
 
   # Disable 2FA
   def POST_disable_authy
-    authy_id = resource.authy_id
-    resource.assign_attributes(:authy_enabled => false, :authy_id => nil)
+    number = resource.verify_number
+    resource.assign_attributes(:authy_enabled => false, :verify_number => nil)
     resource.save(:validate => false)
-
-    other_resource = resource.class.find_by(:authy_id => authy_id)
-    if other_resource
-      # If another resource has the same authy_id, do not delete the user from
-      # the API.
-      forget_device
-      set_flash_message(:notice, :disabled)
-    else
-      response = Authy::API.delete_user(:id => authy_id)
-      if response.ok?
-        forget_device
-        set_flash_message(:notice, :disabled)
-      else
-        # If deleting the user from the API fails, set everything back to what
-        # it was before.
-        # I'm not sure this is a good idea, but it was existing behaviour.
-        # Could be changed in a major version bump.
-        resource.assign_attributes(:authy_enabled => true, :authy_id => authy_id)
-        resource.save(:validate => false)
-        set_flash_message(:error, :not_disabled)
-      end
-    end
+    forget_device
+    set_flash_message(:notice, :disabled)
     redirect_to after_authy_disabled_path_for(resource)
   end
 
   def GET_verify_authy_installation
-    if resource_class.authy_enable_qr_code
-      response = Authy::API.request_qr_code(id: resource.authy_id)
-      @authy_qr_code = response.qr_code
-    end
     render :verify_authy_installation
   end
 
   def POST_verify_authy_installation
-    token = Authy::API.verify({
-      :id => self.resource.authy_id,
-      :token => params[:token],
-      :force => true
-    })
+    client = Twilio::REST::Client.new
+    check = client.verify.v2.services(ENV['TWILIO_VERIFY_SERVICE_ID'])
+                  .verification_checks
+                  .create(to: @resource.verify_number, code: params[:token])
+    approved = (check.status == 'approved')
 
-    self.resource.authy_enabled = token.ok?
+    self.resource.authy_enabled = approved
 
-    if token.ok? && self.resource.save
+    if approved && self.resource.save
       remember_device(@resource.id) if params[:remember_device].to_i == 1
       record_authy_authentication
       set_flash_message(:notice, :enabled)
       redirect_to after_authy_verified_path_for(resource)
     else
-      if resource_class.authy_enable_qr_code
-        response = Authy::API.request_qr_code(id: resource.authy_id)
-        @authy_qr_code = response.qr_code
-      end
       handle_invalid_token :verify_authy_installation, :not_enabled
     end
   end
@@ -202,11 +168,11 @@ class Devise::DeviseAuthyController < DeviseController
   end
 
   def check_resource_has_authy_id
-    redirect_to [resource_name, :enable_authy] if !resource.authy_id
+    redirect_to [resource_name, :enable_authy] if !resource.verify_number
   end
 
   def check_resource_not_authy_enabled
-    if resource.authy_id && resource.authy_enabled
+    if resource.verify_number && resource.authy_enabled
       redirect_to after_authy_verified_path_for(resource)
     end
   end

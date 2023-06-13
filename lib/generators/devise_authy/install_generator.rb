@@ -25,8 +25,10 @@ module DeviseAuthy
 
       def add_initializer
         initializer("authy.rb") do
-          "Authy.api_key = ENV[\"AUTHY_API_KEY\"]\n" \
-          "Authy.api_uri = \"https://api.authy.com/\""
+          "Twilio.configure do |config|\n" \
+          "    config.account_sid = ENV[\"TWILIO_SID\"]\n" \
+          "    config.auth_token = ENV[\"TWILIO_AUTH\"]\n"
+          "end"
         end
       end
 
